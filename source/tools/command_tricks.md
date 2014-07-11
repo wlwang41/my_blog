@@ -10,7 +10,7 @@ date: 2014-07-10 16:24
     > mac默认是没有tree命令的，所以可以有2种办法:
 
     1. `brew install tree`
-    2. `find . -print | sed -e 's;[^/]*/;|____;g;s;____|; |;g’`
+    2. `find . -print | sed -e 's;[^/]*/;|____;g;s;____|; |;g'`
 
 * 查看代码有多少行
 
