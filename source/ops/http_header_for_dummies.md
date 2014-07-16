@@ -12,6 +12,7 @@ HTTP的headers是HTTP requests和responses的核心部分, 它携带了包括客
 对于HTTP Response而言, 它的结构第一行称为status line, 它包括协议和返回码两部分.
 
 状态码大致可分为:
+
 * 200's are used for successful requests.
 * 300's are for redirections.
 * 400's are used if there was a problem with the request.
