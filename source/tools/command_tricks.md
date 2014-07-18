@@ -182,3 +182,13 @@ date: 2014-07-10 16:24
 * 说出任意内容(限OSX)
 
         say 'You love me.'
+
+* OSX读写ntfs格式移动硬盘
+
+        mkdir -p /Volumes/1 && sudo mount -t ntfs /dev/disk1s1 /Volumes/1
+
+    之后操作1文件夹就行了
+
+    弹出:
+
+        sudo umount /dev/disk1s1
