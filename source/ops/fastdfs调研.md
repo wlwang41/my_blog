@@ -12,6 +12,10 @@ date: 2014-08-12 14:33
 由于我没能提出另一个可靠的方案，所以也就决定使用它了。希望不要成为和以前选用cassandra作为主数据库一样的黑历史。
 这篇文章主要整理一些碎片的文档，希望能够慢慢完善最终成为我们组内使用FastDFS的一个wiki。
 
+## FastDFS安装
+
+安装请参考[这里](http://www.zrwm.com/?cat=131)。
+
 ## FastDFS概述
 
 通过[Google](http://search.aol.com/aol/search?q=fastdfs&s_it=opensearch)来搜FastDFS，
@@ -476,3 +480,67 @@ FastDFS这样的架构十分轻量，没有Master角色，使用对等结构，�
 
     #use "#include" directive to include HTTP other settiongs
     ##include http.conf
+
+### 缓存
+
+缓存的方案选取的是在tracker的机器上安装 `ngx_cache_purge` 模块来提供缓存。
+
+修改nginx配置如下:
+
+    worker_processes  4;                  #根据CPU核心数而定
+    events {
+        worker_connections  65535;        #最大链接数
+        use epoll;                        #新版本的Linux可使用epoll加快处理性能
+    }
+    http {
+        #设置缓存参数
+        server_names_hash_bucket_size 128;
+        client_header_buffer_size 32k;
+        large_client_header_buffers 4 32k;
+        client_max_body_size 300m;
+        sendfile        on;
+        tcp_nopush      on;
+        proxy_redirect off;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 90;
+        proxy_send_timeout 90;
+        proxy_read_timeout 90;
+        proxy_buffer_size 16k;
+        proxy_buffers 4 64k;
+        proxy_busy_buffers_size 128k;
+        proxy_temp_file_write_size 128k;
+        #设置缓存存储路径、存储方式、分配内存大小、磁盘最大空间、缓存期限
+        proxy_cache_path /var/cache/nginx/proxy_cache levels=1:2 keys_zone=http-cache:500m max_size=10g inactive=30d;
+        proxy_temp_path /var/cache/nginx/proxy_cache/tmp;
+
+        #设置group1的服务器
+        upstream fdfs_group1 {
+            server 172.16.1.203:8080 weight=1 max_fails=2 fail_timeout=30s;
+            server 172.16.1.204:8080 weight=1 max_fails=2 fail_timeout=30s;
+        }
+        server {
+            #设置服务器端口
+            listen       8080;
+            #设置group1的负载均衡参数
+            location /group1/M00 {
+                proxy_next_upstream http_502 http_504 error timeout invalid_header;
+                proxy_cache http-cache;
+                proxy_cache_valid  200 304 12h;
+                proxy_cache_key $uri$is_args$args;
+                proxy_pass http://fdfs_group1;
+                expires 30d;
+            }
+        }
+        location ~ /purge(/.*) {
+            allow 127.0.0.1;
+            allow 172.16.1.0/24;
+            deny all;
+            proxy_cache_purge http-cache  $1$is_args$args;
+        }
+    }
+
+重启nginx，上传一张图片，然后去nginx的cache目录查看是否有缓存文件，要清除缓存只需在url中group之前加上`purge`。
+
+> 但是，都要读文件，只是换一个路径这样的缓存意义何在?
