@@ -103,7 +103,7 @@ date: 2014-07-10 16:24
 
         上传文件:
 
-            curl --request PUT 'http://www.somedomain.com/rest-api/user/12345/' --data @data.txt
+            curl --request POST 'http://127.0.0.1:8008/api/trace_file' -F 'trace_file=@journal.txt;type=text/plain'
 
     * 带上头部信息
 
