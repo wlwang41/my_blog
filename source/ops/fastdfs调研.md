@@ -977,3 +977,227 @@ body格式:
         @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file size
         @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file create timestamp
         @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file CRC32 signature
+
+## php client端接口调用
+**获取客户端版本号**
+
+     string fastdfs_client_version()
+
+**获取最近一个错误号**
+
+    long fastdfs_get_last_error_no()
+
+**获取最近一次错误的信息**
+
+    string fastdfs_get_last_error_info()
+
+**为http下载获取防盗连接**
+
+    string fastdfs_http_gen_token(string remote_filename, int timestamp)
+    生成防盗连接
+    参数：
+        @remote_filename:  远程文件名（不包含group name）
+        @timestamp: 时间戳
+    返回：成功则返回token串，否则返回false
+
+**获取文件信息**
+
+    array fastdfs_get_file_info(string group_name, string remote_filename)
+    获取文件的meta info
+    参数：
+        @group_name: 文件所在的组名
+        @remote_filename: 文件在storage server上的名字
+    返回：
+        成功则返回文件信息数组，否则返回false
+        文件信息数组包括以下信息：
+        create_timestamp: 文件创建的时间
+        file_size: 文件大小
+        source_ip_addr: 文件上传的源storage ip地址
+
+    array fastdfs_get_file_info(string file_id)
+    获取文件的meta info
+    参数：
+        @file_id: 组名+远程文件名
+
+**判断文件是否存在**
+
+    boolean fastdfs_storage_file_exist(string group_name, string remote_filename[, array tracker_server, array storage_server])
+    判断文件是否存在
+    参数：
+        @group_name: 文件所在的组名
+        @remote_filename: 远程文件名
+        @array tracker_server: tracker_server数组，包含ip_addr, port and sock
+        @array storage_server: storage_server数组，包含ip_addr, port and sock
+    返回：
+        存在返回true，否则返回false
+
+    boolean fastdfs_storage_file_exist1(string file_id)
+
+**上传文件**
+
+    array fastdfs_storage_upload_by_filename(string local_filename[, string file_ext_name, array meta_list, string group_name, array tracker_server, array storage_server])
+    参数：
+        @local_filename: 本地要上传的文件名
+        @file_ext_name: 文件扩展名，不包含dot
+        @meta_list: 文件的一些元信息例如 array('width'=>1024,'height'=>768)
+        @group_name: 指定文件存储到的组
+        @array tracker_server: tracker_server数组，包含ip_addr, port and sock
+        @array storage_server: storage_server数组，包含ip_addr, port and sock
+    返回：
+        成功返回数组，否则返回false
+        数组包含以下字段：group_name, filename
+
+    array fastdfs_storage_upload_by_filename1(string local_filename[, string file_ext_name, array meta_list, string group_name, array tracker_server, array storage_server])
+    返回：
+        成功则返回file_id, 否则返回false
+        
+    array fastdfs_storage_upload_by_filebuff(string file_buff[, string file_ext_name, array meta_list, string group_name, array tracker_server, array storage_server])
+    参数：
+        @file_buff: 文件内容
+        @file_ext_name: 文件扩展名，不包含dot
+        @meta_list: 文件的一些元信息例如 array('width'=>1024,'height'=>768)
+        @group_name: 指定文件存储到的组
+        @array tracker_server: tracker_server数组，包含ip_addr, port and sock
+        @array storage_server: storage_server数组，包含ip_addr, port and sock
+    返回：
+        成功返回数组，否则返回false
+        数组包含以下字段：group_name, filename
+        
+    array fastdfs_storage_upload_by_filebuff1(string file_buff[, string file_ext_name, array meta_list, string group_name, array tracker_server, array storage_server])
+    
+    array fastdfs_storage_upload_by_callback()
+    
+**append modify接口暂时不用**
+
+**删除文件**
+
+    boolean fastdfs_storage_delete_file(string group_name, string remote_filename[, array tracker_server, array storage_server])
+    从storage server 删除文件
+    参数：
+        @group_name: 文件的组名
+        @remote_filename: 文件在storage server上的名字
+        @array tracker_server: tracker_server数组，包含ip_addr, port and sock
+        @array storage_server: storage_server数组，包含ip_addr, port and sock
+    返回：
+        成功则返回true, 否则返回false
+    
+     boolean fastdfs_storage_delete_file1(string file_id[, array tracker_server, array storage_server])
+
+**下载文件**
+
+    string fastdfs_storage_download_file_to_buff(string group_name, string remote_filename[, long file_offset, long download_bytes, array tracker_server, array storage_server])
+    从storage server下载文件
+    参数：
+        @group_name；文件的组名
+        @remote_filename: 文件在storage server上的名字
+        @file_offset:0(默认)
+        @array tracker_server: tracker_server数组，包含ip_addr, port and sock
+        @array storage_server: storage_server数组，包含ip_addr, port and sock
+    返回：
+        成功则返回文件的内容，否则返回false
+        
+    string fastdfs_storage_download_file_to_buff1(string file_id[, long file_offset, long download_bytes, array tracker_server, array storage_server])
+
+    boolean fastdfs_storage_download_file_to_file(string group_name, string remote_filename, string local_filename[, long file_offset, long download_bytes, array tracker_server, array storage_server])
+    从storage现在文件到本地文件
+    参数：
+        @local_filename: 要保存到本地的文件名
+        其余参数同上
+
+**设置、获取文件meta_data**
+
+    boolean fastdfs_storage_set_metadata(string group_name, string remote_filename, array meta_list[, string op_type, array tracker_server, array storage server]
+    设置文件metadata
+    参数：
+        @meta_list:meta信息数组：array('width'=>1024,'height'=>768)
+        @op_type: 操作有两种，合并或者覆盖
+            FDFS_STORAGE_SET_METADATA_FLAG_MERGE
+            FDFS_STORAGE_SET_METADATA_FLAG_OVERWRITE
+    返回：
+        成功返回true,否则返回false
+        
+    array fastdfs_storage_get_metadata(string group_name, string remote_filename[, array tracker_server, array storage_server])
+    获取文件的metadata
+    返回：
+        成功则返回meta_data数组，否则返回false
+        
+**连接/断开连接到server**
+
+    array fastdfs_connect_server(string ip_addr, int port)
+    连接到server
+    参数：
+        @ip_addr:  server的ip地址
+        @port: server的端口
+    返回：
+        连接成功返回true;否则返回false
+    
+    array fastdfs_disconnect_server(string ip_addr, int port)
+    断开到server的连接
+    参数：
+        同上
+
+**Active 测试**
+
+    boolean fastdfs_acitve_test(array server_info)
+    给server发送active_test命令
+    参数：
+        @server_info: array: ip_addr, port, sock
+    返回：
+        active返回true，否则返回false
+
+**获取连接**
+
+    array fastdfs_tracker_get_connection()
+    获取到tracker server的连接
+    返回：
+        成功则返回数组，否则返回false
+        数组包括：ip_addr, port, sock
+        
+    array fastdfs_tracker_make_all_connection()
+    连接到所有的tracker server
+    返回：
+        成功返回true;否则返回false
+
+**列出tracker的组**
+    
+    array fastdfs_tracker_list_groups([string group_name, array tracker_server])
+    获取组信息
+    参数：
+        @gourp_name:指定组名，默认列出所有组
+    返回：
+        组信息数组，数组每一项是一个组
+
+
+**请求获取storage server to store（上传文件）**
+
+    array fastdfs_tracker_query_storage_store([string group_name, array tracker_server])
+    获取storage server的信息用以上传文件
+    返回：
+        成功返回一个storage server信息，保存在数组，否则返回false；
+        数组包含：ip_addr, port, sock, store_path_index
+        
+    array fastdfs_tracker_query_storage_store_list
+    同上，但返回的是storage server列表
+    
+**请求storage server to update（更新meta data）**
+
+    array fastdfs_tracker_query_storage_update(string group_name, string remote_filename[, array tracekr_server]
+    
+**请求storage server to fetch（下载文件）**
+
+    array fastdfs_tracker_query_storage_fetch(string gourp_name, string remote_filename[, array tracker_server])
+
+**获取可下载某文件的storage server
+
+    array fastdfs_tracker_query_storage_list(string group_name, string remote_filename[, array tracker_server])
+    获取可以下载文件内容的storage server list
+   
+**删除storage**
+
+    boolean fastdfs_tracker_delete_storage(string group, string storage_ip)
+    将storage 从集群中删除
+    参数：
+        @group_name: storage所在的组名
+        @storage_ip: storage server 的ip
+    返回：
+        成功返回true,否则返回false
