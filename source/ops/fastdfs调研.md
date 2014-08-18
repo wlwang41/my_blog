@@ -544,3 +544,436 @@ FastDFS这样的架构十分轻量，没有Master角色，使用对等结构，�
 重启nginx，上传一张图片，然后去nginx的cache目录查看是否有缓存文件，要清除缓存只需在url中group之前加上`purge`。
 
 > 但是，都要读文件，只是换一个路径这样的缓存意义何在?
+
+## Fastdfs-zyc所实现的service
+
+- BaseService  基类，仅包含Session
+
+- FileDataService
+     - 根据组名获取文件列表
+     - 根据ip和fileId去数据库查找DownloadFileRecord
+     - 保存DownloadFileRecord
+
+- JobService   重点，所有其他service的数据都是由这个服务从服务端读取数据保存在数据库上
+     - 按分钟更新组数据
+     - 按小时更新组数据
+     - 按天更新组数据
+     - 从日志中读取数据保存到数据库
+
+- MonitorService
+     - 列出组信息
+     - 列出所有组
+     - 根据组名列出storage
+     - …
+
+- StructureService
+     - listStorageTopLine
+     - listStorageAboutFile
+
+- UserService 监控系统的用户控制相关
+
+- WarningService
+     - 添加删除被通知用户
+     - 添加删除预警warning
+     - 更新warning数据
+
+## FastDFS 同步机制
+
+*参考自作者博客[FastDFS How to -- 同步机制](http://blog.chinaunix.net/uid-20315669-id-1967081.html)*
+
+在FastDFS的服务器端配置文件中，bind_addr这个参数用于需要绑定本机IP地址的场合。只有这个参数和主机特征相关，其余参数都是可以统一配置的。在不需要绑定本机的情况下，为了便于管理和维护，建议所有tracker server的配置文件相同，同组内的所有storage server的配置文件相同。
+
+tracker server的配置文件中没有出现storage server，而storage server的配置文件中会列举出所有的tracker server。这就决定了storage server和tracker server之间的连接由storage server主动发起，storage server为每个tracker server启动一个线程进行连接和通讯，这部分的通信协议请参阅《FastDFS HOWTO -- Protocol》中的“2. storage server to tracker server command”部分。
+
+tracker server会在内存中保存storage分组及各个组下的storage server，并将连接过自己的storage server及其分组保存到文件中，以便下次重启服务时能直接从本地磁盘中获得storage相关信息。storage server会在内存中记录本组的所有服务器，并将服务器信息记录到文件中。tracker server和storage server之间相互同步storage server列表：
+
+1. 如果一个组内增加了新的storage server或者storage server的状态发生了改变，tracker server都会将storage server列表同步给该组内的所有storage server。以新增storage server为例，因为新加入的storage server主动连接tracker server，tracker server发现有新的storage server加入，就会将该组内所有的storage server返回给新加入的storage server，并重新将该组的storage server列表返回给该组内的其他storage server；
+2. 如果新增加一台tracker server，storage server连接该tracker server，发现该tracker server返回的本组storage server列表比本机记录的要少，就会将该tracker server上没有的storage server同步给该tracker server。
+
+同一组内的storage server之间是对等的，文件上传、删除等操作可以在任意一台storage server上进行。文件同步只在同组内的storage server之间进行，采用push方式，即源服务器同步给目标服务器。以文件上传为例，假设一个组内有3台storage server A、B和C，文件F上传到服务器B，由B将文件F同步到其余的两台服务器A和C。我们不妨把文件F上传到服务器B的操作为源头操作，在服务器B上的F文件为源头数据；文件F被同步到服务器A和C的操作为备份操作，在A和C上的F文件为备份数据。同步规则总结如下：
+
+1. 只在本组内的storage server之间进行同步；
+2. 源头数据才需要同步，备份数据不需要再次同步，否则就构成环路了；
+3. 上述第二条规则有个例外，就是新增加一台storage server时，由已有的一台storage server将已有的所有数据（包括源头数据和备份数据）同步给该新增服务器。
+
+**关于storage server的7个状态**
+
+storage server有7个状态
+
+- FDFS_STORAGE_STATUS_INIT      :初始化，尚未得到同步已有数据的源服务器
+- FDFS_STORAGE_STATUS_WAIT_SYNC :等待同步，已得到同步已有数据的源服务器
+- FDFS_STORAGE_STATUS_SYNCING   :同步中
+- FDFS_STORAGE_STATUS_DELETED   :已删除，该服务器从本组中摘除（注：本状态的功能尚未实现）
+- FDFS_STORAGE_STATUS_OFFLINE   :离线
+- FDFS_STORAGE_STATUS_ONLINE    :在线，尚不能提供服务
+- FDFS_STORAGE_STATUS_ACTIVE    :在线，可以提供服务
+
+当storage server的状态为FDFS_STORAGE_STATUS_ONLINE时，当该storage server向tracker server发起一次heart beat时，tracker server将其状态更改为FDFS_STORAGE_STATUS_ACTIVE。
+
+组内新增加一台storage server A时，由系统自动完成已有数据同步，处理逻辑如下：
+
+1. storage server A连接tracker server，tracker server将storage server A的状态设置为FDFS_STORAGE_STATUS_INIT。storage server A询问追加同步的源服务器和追加同步截至时间点，如果该组内只有storage server A或该组内已成功上传的文件数为0，则没有数据需要同步，storage server A就可以提供在线服务，此时tracker将其状态设置为FDFS_STORAGE_STATUS_ONLINE，否则tracker server将其状态设置为FDFS_STORAGE_STATUS_WAIT_SYNC，进入第二步的处理；
+2. 假设tracker server分配向storage server A同步已有数据的源storage server为B。同组的storage server和tracker server通讯得知新增了storage server A，将启动同步线程，并向tracker server询问向storage server A追加同步的源服务器和截至时间点。storage server B将把截至时间点之前的所有数据同步给storage server A；而其余的storage server从截至时间点之后进行正常同步，只把源头数据同步给storage server A。到了截至时间点之后，storage server B对storage server A的同步将由追加同步切换为正常同步，只同步源头数据；
+3. storage server B向storage server A同步完所有数据，暂时没有数据要同步时，storage server B请求tracker server将storage server A的状态设置为FDFS_STORAGE_STATUS_ONLINE；
+4. 当storage server A向tracker server发起heart beat时，tracker server将其状态更改为FDFS_STORAGE_STATUS_ACTIVE。
+
+## FastDFS使用的通信协议
+**参考自作者博客[FastDFS HOWTO -- Protocol](http://blog.chinaunix.net/uid-20315669-id-1967079.html)**
+
+FastDFS采用TCP/IP协议，package包含header和body, header和body都可能为空
+
+header格式：
+
+    @ TRACKER_PROTO_PKG_LEN_SIZE bytes package length
+    @ 1 byte command
+    @ 1 byte status
+    note:
+    TRACKER_PROTO_PKG_LEN_SIZE (8) bytes number buff is Big-Endian bytes
+
+body格式:
+
+按照发送方和接收方角色不同可以分为5大类：
+
+### 1. Common Command 通用命令
+**FDFS_PROTO_CMD_QUIT**
+
+    # function: notify server connection will be closed （通知服务器连接将会中断）
+    # request body: none (no body part)
+    # response: none (no header and no body)
+
+**FDFS_PROTO_CMD_ACTIVE_TEST**
+
+    # function: active test （测试是否active）
+    # request body: none
+    # response body: none
+
+### 2. storage server 发送给tracker server的命令
+这些commond的response 是 TRACKER_PROTO_CMD_STORAGE_RESP
+
+**TRACKER_PROTO_CMD_STORAGE_JOIN**
+
+    # function: storage join to tracker (将storage加入到tracker的track列表)
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN + 1 bytes: group name
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage http server port
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: path count
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: subdir count per path
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: upload priority
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: join time (join timestamp)
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: up time (start timestamp)
+        @ FDFS_VERSION_SIZE bytes: storage server version
+        @ FDFS_DOMAIN_NAME_MAX_SIZE bytes: domain name of the web server on the storage server
+        @ 1 byte: init flag ( 1 for init done)
+        @ 1 byte: storage server status
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: tracker server count excluding current tracker
+    # response body:
+        @ FDFS_IPADDR_SIZE bytes: sync source storage server ip address
+    # memo: return all storage servers in the group only when storage servers changed or return none（仅当storage server生效才返回所有的storage server,否则返回空）
+
+**TRACKER_PROTO_CMD_STORAGE_BEAT**
+
+    # function: heart beat （心跳）
+    # request body: none or storage stat info （返回空或者storage状态信息）
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total upload count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success upload count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total set metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success set metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total delete count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success delete count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total download count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success download count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total get metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success get metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total create link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success create link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total delete link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success delete link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: last source update timestamp
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: last sync update timestamp
+       @TRACKER_PROTO_PKG_LEN_SIZE bytes:  last synced timestamp
+       @TRACKER_PROTO_PKG_LEN_SIZE bytes:  last heart beat timestamp
+    # response body: same to command TRACKER_PROTO_CMD_STORAGE_JOIN
+    # memo: storage server sync it's stat info to tracker server only when storage stat info changed（仅当storage server的状态信息改变时才将其同步到tracker）
+
+**TRACKER_PROTO_CMD_STORAGE_REPORT**
+
+    # function: report disk usage(报告硬盘使用情况)
+    # request body:
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total space in MB（硬盘总体积）
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: free space in MB （空闲大小）
+    # response body: same to command TRACKER_PROTO_CMD_STORAGE_JOIN
+
+**TRACKER_PROTO_CMD_STORAGE_REPLICA_CHG**
+
+    # function: replica new storage servers which maybe not exist in the tracker server （？？？）
+    # request body: n * (1 + FDFS_IPADDR_SIZE) bytes, n >= 1. One storage entry format:
+        @ 1 byte: storage server status
+        @ FDFS_IPADDR_SIZE bytes: storage server ip address
+    # response body: none
+
+**TRACKER_PROTO_CMD_STORAGE_SYNC_SRC_REQ**
+
+    # function: source storage require sync. when add a new storage server, the existed storage servers in the same group will ask the tracker server to tell the source storage server which will sync old data to it（当新添加一个storage server时，同组的其他storage server会向tracker请求告诉新的storage有数据要同步给他）
+    # request body:
+        @ FDFS_IPADDR_SIZE bytes: dest storage server (new storage server) ip address （新加入的storage server的ip地址）
+    # response body: none or
+        @ FDFS_IPADDR_SIZE bytes: source storage server ip address（源storage server的ip地址）
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: sync until timestamp
+    # memo: if the dest storage server not do need sync from one of storage servers in the group, the response body is emtpy（若新storage server不需要源storage server的同步，返回空）
+
+**TRACKER_PROTO_CMD_STORAGE_SYNC_DEST_REQ**
+
+    # function: dest storage server (new storage server) require sync（新加入的storage 向tracker请求同步）
+    # request body: none
+    # response body: none or
+        @ FDFS_IPADDR_SIZE bytes: source storage server ip address
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: sync until timestamp
+    # memo: if the dest storage server not do need sync from one of storage servers in the group, the response body is emtpy（若新storage server不需要源storage server的同步，返回空）
+
+**TRACKER_PROTO_CMD_STORAGE_SYNC_NOTIFY**
+
+    # function: new storage server sync notify(新storage同步通告)
+    # request body:
+        @ FDFS_IPADDR_SIZE bytes: source storage server ip address
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: sync until timestamp
+    # response body: same to command TRACKER_PROTO_CMD_STORAGE_JOIN
+
+### 3.client发送给tracker server的命令
+
+以下两个命令的response是TRACKER_PROTO_CMD_SERVER_RESP
+
+**TRACKER_PROTO_CMD_SERVER_LIST_GROUP**
+
+    # function: list all groups （列出所有的group）
+    # request body: none
+    # response body: n group entries, n >= 0, the format of each entry:
+     @ FDFS_GROUP_NAME_MAX_LEN+1 bytes: group name
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: free disk storage in MB
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server count
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server http port
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: active server count
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: current write server index
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: store path count on storage server
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: subdir count per path on storage server
+
+
+**TRACKER_PROTO_CMD_SERVER_LIST_STORAGE**
+
+    # function: list storage servers of a group（列出某个组的所有storage server）
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: the group name to query(要列的组名)
+    # response body: n storage entries, n >= 0, the format of each entry:
+       @ 1 byte: status
+       @ FDFS_IPADDR_SIZE bytes: ip address
+       @ FDFS_DOMAIN_NAME_MAX_SIZE  bytes : domain name of the web server
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: source storage server ip address
+       @ FDFS_VERSION_SIZE bytes: storage server version
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: join time (join in timestamp)
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: up time (start timestamp)
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total space in MB
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: free space in MB
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: upload priority
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: store path count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: subdir count per path
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: current write path[
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage http port
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total upload count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success upload count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total set metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success set metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total delete count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success delete count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total download count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success download count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total get metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success get metadata count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total create link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success create link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: total delete link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: success delete link count
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: last source update timestamp
+       @ TRACKER_PROTO_PKG_LEN_SIZE bytes: last sync update timestamp
+       @TRACKER_PROTO_PKG_LEN_SIZE bytes:  last synced timestamp
+       @TRACKER_PROTO_PKG_LEN_SIZE bytes:  last heart beat timestamp
+
+以下命令response是 TRACKER_PROTO_CMD_SERVICE_RESP
+
+**TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITHOUT_GROUP_ONE**
+
+    # function: query which storage server to store file(查询向哪一个storage server保存文件)
+    # request body: none
+    # response body:
+     @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+     @ FDFS_IPADDR_SIZE - 1 bytes: storage server ip address
+     @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+     @1 byte: store path index on the storage server
+
+**TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITHOUT_GROUP_ALL**
+
+    # function: query which storage server to store file
+    # request body: none
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ FDFS_IPADDR_SIZE - 1 bytes: storage server ip address (* multi)
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port (*multi)
+        @1 byte: store path index on the storage server
+
+**TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITH_GROUP_ONE**
+
+    # function: query which storage server to store file
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ FDFS_IPADDR_SIZE - 1 bytes: storage server ip address
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+        @1 byte: store path index on the storage server
+
+**TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITH_GROUP_ALL**
+
+    # function: query which storage server to store file
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ FDFS_IPADDR_SIZE - 1 bytes: storage server ip address  (* multi)
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port   (* multi)
+        @1 byte: store path index on the storage server
+
+
+**TRACKER_PROTO_CMD_SERVICE_QUERY_FETCH**
+
+    # function: query which storage server to download the file（查询向哪个storage server 请求下载文件）
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ FDFS_IPADDR_SIZE - 1 bytes: storage server ip address
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+
+**TRACKER_PROTO_CMD_SERVICE_QUERY_FETCH_ALL**
+
+    # function: query all storage servers to download the file
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ FDFS_IPADDR_SIZE - 1 bytes: storage server ip address
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: storage server port
+        @ n * (FDFS_IPADDR_SIZE - 1) bytes:  storage server ip addresses, n can be 0
+
+### 4. Storage server向Storage Server发送的命令
+该类命令的response 是STORAGE_PROTO_CMD_RESP
+
+**STORAGE_PROTO_CMD_SYNC_CREATE_FILE**
+
+    # function: sync new created file （同步新创建的文件）
+    # request body:
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: filename bytes
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file size/bytes
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes : filename
+        @ file size bytes: file content
+    # response body: none
+
+**STORAGE_PROTO_CMD_SYNC_DELETE_FILE**
+
+    # function: sync deleted file（同步删除的文件）
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body: none
+
+**STORAGE_PROTO_CMD_SYNC_UPDATE_FILE**
+
+    # function: sync updated file （同步更新的文件）
+    # request body: same to command STORAGE_PROTO_CMD_SYNC_CREATE_FILE
+    # respose body: none
+
+
+### client向storage server 发送的命令
+该类命令的response是 STORAGE_PROTO_CMD_RESP
+
+**STORAGE_PROTO_CMD_UPLOAD_FILE**
+
+    # function: upload file to storage server(上传文件到storage server)
+    # request body:
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: meta data bytes
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file size
+        @ meta data bytes: each meta data seperated by \x01,
+                            name and value seperated by \x02
+        @ file size bytes: file content
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+
+**STORAGE_PROTO_CMD_UPLOAD_SLAVE_FILE**
+
+    # function: upload slave file to storage server
+    # request body:
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: master filename length
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file size
+        @ FDFS_FILE_PREFIX_MAX_LEN bytes: filename prefix
+        @ FDFS_FILE_EXT_NAME_MAX_LEN bytes: file ext name, do not include dot (.)
+        @ master filename bytes: master filename
+        @ file size bytes: file content
+    # response body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+
+ **STORAGE_PROTO_CMD_DELETE_FILE**
+
+    # function: delete file from storage server(从storage server中删除文件)
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body: none
+
+**STORAGE_PROTO_CMD_SET_METADATA**
+
+    # function: delete file from storage server（从storage server中删除文件）
+    # request body:
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: filename length
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: meta data size
+        @ 1 bytes: operation flag,
+            'O' for overwrite all old metadata（O, 覆盖所有metadata）
+            'M' for merge, insert when the meta item not exist, otherwise update it（M, 插入或更新metadata）
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+        @ meta data bytes: each meta data seperated by \x01,
+                            name and value seperated by \x02
+    # response body: none
+
+**STORAGE_PROTO_CMD_DOWNLOAD_FILE**
+
+    # function: download/fetch file from storage server（从storage server下载文件）
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body:
+        @ file content
+
+**STORAGE_PROTO_CMD_GET_METADATA**
+
+    # function: get metat data from storage server（从storage server获取metadata）
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body
+        @ meta data buff, each meta data seperated by \x01, name and value seperated by \x02
+
+**STORAGE_PROTO_CMD_QUERY_FILE_INFO**
+
+    # function: query file info from storage server
+    # request body:
+        @ FDFS_GROUP_NAME_MAX_LEN bytes: group name
+        @ filename bytes: filename
+    # response body:
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file size
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file create timestamp
+        @ TRACKER_PROTO_PKG_LEN_SIZE bytes: file CRC32 signature
