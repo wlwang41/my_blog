@@ -1,5 +1,5 @@
 ---
-title: "not-so-obvious Python stuff"
+title: "python的坑"
 date: 2014-07-20 21:13
 ---
 
