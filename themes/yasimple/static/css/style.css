@@ -15,7 +15,7 @@ html>body { font-size: 15px; }
 html {
     font-size: 100%;
     overflow-y: scroll;
-    background: ghostwhite;
+    background: salmon;
     -webkit-text-size-adjust: 100%;
     -ms-text-size-adjust: 100%;
 }
@@ -126,7 +126,7 @@ pre code {
 
 /* Custom Configuration */
 #container {
-    background: white;
+    background: bisque;
     width: 50em;
     line-height: 1.5em;
     margin: 1.5em auto 3em auto;
