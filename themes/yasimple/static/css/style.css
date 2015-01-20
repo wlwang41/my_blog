@@ -76,6 +76,7 @@ img {
     border: 0;
     vertical-align: middle;
     margin: 0 auto;
+    max-width: 750px;
 }
 
 table {
